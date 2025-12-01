@@ -161,12 +161,15 @@
 </head>
 <body>
   <div class="container">
-    <h1>🔗 Link Shortener Admin</h1>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+      <h1 style="margin: 0;">🔗 Link Shortener Admin</h1>
+      <button id="logoutBtn" onclick="logout()" class="secondary" style="display: none;">Logout</button>
+    </div>
     
     <!-- Authentication -->
     <div id="authSection" class="auth-section">
       <h2>Login</h2>
-      <input type="password" id="password" placeholder="Admin Password">
+      <input type="password" id="password" placeholder="Admin Password" onkeypress="if(event.key==='Enter')authenticate()">
       <button onclick="authenticate()">Login</button>
       <div id="authStatus"></div>
     </div>
@@ -303,6 +306,34 @@
   <script>
     let password = '';
 
+    // Check for saved password on load
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedPassword = localStorage.getItem('adminPassword');
+      if (savedPassword) {
+        password = savedPassword;
+        // Try to authenticate with saved password
+        fetch('/admin/links', {
+          headers: { 'Authorization': `Bearer ${password}` }
+        })
+        .then(r => {
+          if (r.ok) {
+            document.getElementById('authSection').style.display = 'none';
+            document.getElementById('content').classList.add('active');
+            document.getElementById('logoutBtn').style.display = 'block';
+            loadLinks();
+          } else {
+            // Invalid saved password, clear it
+            localStorage.removeItem('adminPassword');
+            password = '';
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem('adminPassword');
+          password = '';
+        });
+      }
+    });
+
     function authenticate() {
       password = document.getElementById('password').value;
       fetch('/admin/links', {
@@ -310,14 +341,26 @@
       })
       .then(r => {
         if (r.ok) {
+          // Save password to localStorage
+          localStorage.setItem('adminPassword', password);
           document.getElementById('authSection').style.display = 'none';
           document.getElementById('content').classList.add('active');
+          document.getElementById('logoutBtn').style.display = 'block';
           loadLinks();
         } else {
           showStatus('authStatus', 'Invalid password', 'error');
         }
       })
       .catch(e => showStatus('authStatus', 'Authentication failed', 'error'));
+    }
+
+    function logout() {
+      localStorage.removeItem('adminPassword');
+      password = '';
+      document.getElementById('authSection').style.display = 'block';
+      document.getElementById('content').classList.remove('active');
+      document.getElementById('logoutBtn').style.display = 'none';
+      document.getElementById('password').value = '';
     }
 
     function switchTab(tab) {
