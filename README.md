@@ -1,271 +1,342 @@
-# Link Shortener & Pixel Tracking Service
+# Link Shortener
 
-A high-performance, lightweight link shortening and pixel tracking service built with Node.js and Express. Designed for speed with in-memory lookups and minimal overhead to avoid conversion loss.
+A high-performance link shortening and pixel tracking service built with **TypeScript**, **Node.js**, **Express**, and **SQLite**. Features include rate limiting, IP blacklisting, UTM parameter tracking, and a clean admin web interface.
 
 ## Features
 
-- **Ultra-fast redirects** - In-memory Map storage for instant lookups
-- **Link management** - Add/remove links while the service is running
-- **Pixel tracking** - Serve 1x1 transparent PNGs for tracking
-- **Comprehensive analytics** - Track IP, browser, OS, device, referrer, and language
-- **Real-time logging** - Console logs for all hits
-- **CSV export** - Download hit data for analysis
-- **Password & IP protection** - Secure admin endpoints
-- **Persistent storage** - JSON file backup with batched writes
+✅ **Ultra-fast redirects** - O(1) lookups with in-memory caching  
+✅ **Built-in rate limiting** - Prevents spam with per-IP-per-minute deduplication  
+✅ **IP blacklisting** - Block abusive traffic  
+✅ **UTM parameter tracking** - Capture query parameters for attribution analysis  
+✅ **Session & visitor tracking** - Long-lived cookies for attribution across sessions  
+✅ **Bot detection** - Automatic bot identification via `isbot` library  
+✅ **Client-side analytics** - Lightweight tracking script for page views and events  
+✅ **Performance logging** - Automatic monitoring of slow requests, 404s, and 500 errors  
+✅ **Enhanced health endpoint** - Reports service health with error monitoring for external monitoring tools  
+✅ **API tokens** - Scoped programmatic access for external integrations  
+✅ **Web admin interface** - Manage links, view hits, export data  
+✅ **TypeScript** - Full type safety and better code quality  
+✅ **SQLite database** - Single file, zero configuration  
+✅ **Pixel tracking** - Transparent 1x1 tracking pixel endpoint
 
-## Installation
+## Quick Start
 
 ```bash
 # Install dependencies
 npm install
 
-# Copy environment configuration
+# Configure environment
 cp .env.example .env
+# Edit .env to set PORT, ADMIN_PASSWORD, ALLOWED_ADMIN_IPS
 
-# Edit .env with your settings
-nano .env
-```
+# Build TypeScript
+npm run build
 
-## Configuration
-
-Edit `.env` to configure:
-
-- `PORT` - Server port (default: 3000)
-- `ADMIN_PASSWORD` - Password for admin API access
-- `ALLOWED_ADMIN_IPS` - Comma-separated list of IPs allowed to access admin endpoints
-
-## Usage
-
-```bash
-# Start the server
+# Start server
 npm start
 
-# Or use Node's watch mode for development
+# Or run in development mode with auto-reload
 npm run dev
 ```
 
-## Endpoints
+Then open `http://localhost:3000` in your browser to access the admin interface.
+
+## Architecture
+
+### Unified SQLite Database
+
+All data is stored in a single SQLite database (`data/app.db`) with three tables:
+
+**`links`** - Link mappings
+- `slug` (PRIMARY KEY) - Short link identifier
+- `destination` - Target URL
+- `created_at`, `updated_at` - Timestamps
+
+**`hits`** - Analytics data
+- `id` - Auto-incrementing primary key
+- `type` - 'redirect' or 'pixel'
+- `slug` - Link that was accessed
+- `ip`, `user_agent`, `browser`, `os`, `device` - Client info
+- `referer`, `accept_language` - Request headers
+- `query_params` - JSON string of URL parameters (UTM tracking, etc.)
+- `timestamp`, `created_at` - Timestamps
+- `minute_key` (UNIQUE) - Generated column for rate limiting
+
+**`ip_blacklist`** - Blocked IPs
+- `ip` (PRIMARY KEY) - IP address to block
+- `reason` - Optional description
+- `created_at` - Timestamp
+
+**`api_tokens`** - External API access tokens
+- `id` - Auto-incrementing primary key
+- `name` - Human-readable token name
+- `token` - Unique token string
+- `scopes` - Comma-separated scope list
+- `created_at`, `last_used_at` - Timestamps
+
+**`logs`** - Performance and error monitoring
+- `id` - Auto-incrementing primary key
+- `timestamp` - ISO timestamp
+- `level` - 'info', 'warn', or 'error'
+- `message` - Log message
+- `path`, `method`, `status_code` - Request details
+- `duration_ms` - Request duration (for slow requests >100ms)
+- `ip` - Client IP
+- `error_stack` - Stack trace (for 500 errors)
+- `extra` - JSON field for additional context
+- `created_at` - Timestamp
+
+### Rate Limiting
+
+The `hits` table includes a **generated column** `minute_key` that creates a unique constraint on `(ip, slug, minute)`. This prevents spam by allowing only **one hit per IP per link per minute**.
+
+Duplicate hits within the same minute are silently dropped via `ON CONFLICT DO NOTHING`, so the service remains fast even under spam attacks.
+
+### Performance Considerations
+
+**Why denormalized?**
+- Link lookups are O(1) from the database
+- Hit inserts are fast with prepared statements
+- Most queries aggregate data anyway, so joins wouldn't help
+- SQLite with WAL mode handles ~10,000 writes/second
+
+**Why synchronous inserts?**
+- For this scale, sync inserts are fine and simpler
+- Rate limiting prevents spam from overwhelming the system
+- If you need async processing later, add a queue (e.g., BullMQ)
+
+**Why combined database?**
+- Simpler connection management
+- Atomic transactions across config and analytics
+- Single file to backup
+
+## API Endpoints
 
 ### Public Endpoints
 
-#### `GET /l/:slug`
-Redirect to the destination URL for the given slug.
+**`GET /`** - Redirects to `ROOT_REDIRECT` (configurable)
 
-**Example:**
+**`GET /l/:slug`** - Redirect to destination URL (tracked)
+
+**`GET /p/:slug`** - 1x1 transparent tracking pixel
+
+**`POST /a/collect`** - Flexible analytics endpoint (no redirect)
+- Accepts JSON payloads for page views and custom events
+- Sets session and visitor cookies like other tracking endpoints
+- CORS enabled for cross-origin requests
+- See "Client-Side Analytics" section below for usage
+
+**`GET /scripts.js`** - Lightweight client-side tracking script
+- Minified JavaScript that automatically logs page views
+- Exposes `window.mm()` for custom event tracking
+- Captures timezone, locale, viewport, DPR, and custom variables
+
+**`GET /health`** - Enhanced health check with error monitoring
+- Returns `status: 'healthy'` or `'degraded'` based on recent errors
+- Includes link/hit counts, uptime, error/warning totals
+- Lists recent errors from the last hour
+- Returns 503 status if >10 errors in the past hour (for external monitoring)
+
+Unknown paths (for HTML clients) redirect to `NOT_FOUND_REDIRECT`. JSON clients receive a 404 JSON.
+500 errors return a friendly HTML error page for browsers and JSON for API clients.
+
+### Admin Endpoints (require Bearer token auth)
+
+**`GET /admin/links`** - List all links with hit counts
+
+**`POST /admin/links`** - Add or update a link
+```json
+{ "slug": "example", "destination": "https://example.com" }
 ```
-https://yourdomain.com/l/github
-→ Redirects to configured destination
+
+**`DELETE /admin/links/:slug`** - Delete a link
+
+**`GET /admin/hits?limit=100`** - Get recent hits
+
+**`GET /admin/stats?slug=X&type=Y`** - Aggregated statistics
+
+**`GET /admin/export/csv?slug=X&type=Y`** - Export hits as CSV
+
+**`GET /admin/download/db`** - Download entire database
+
+### API Tokens (programmatic access)
+- `GET /admin/tokens` - List tokens
+- `POST /admin/tokens` - Create token `{ name, scopes: [links|hits|blacklist|export] }`
+- `DELETE /admin/tokens/:id` - Revoke token
+
+Use tokens with the external API via `Authorization: Bearer <token>` or `?access_token=...`.
+
+### Token-protected API
+- `GET /api/links` (scope: links)
+- `POST /api/links` (scope: links)
+- `DELETE /api/links/:slug` (scope: links)
+- `GET /api/hits?limit=100&slug=&type=` (scope: hits)
+- `GET /api/stats?slug=&type=` (scope: hits)
+- `GET /api/blacklist` (scope: blacklist)
+- `POST /api/blacklist` (scope: blacklist)
+- `DELETE /api/blacklist/:ip` (scope: blacklist)
+- `GET /api/export/csv` (scope: export)
+
+**`GET /admin/blacklist`** - List blacklisted IPs
+
+**`POST /admin/blacklist`** - Add IP to blacklist
+```json
+{ "ip": "1.2.3.4", "reason": "Spam" }
 ```
 
-#### `GET /p/:slug`
-Serve a 1x1 transparent tracking pixel.
+**`DELETE /admin/blacklist/:ip`** - Remove IP from blacklist
 
-**Example:**
+**`GET /admin/logs?limit=100&level=error`** - View performance and error logs
+- Automatically logs slow requests (>100ms), 404s, and 500 errors
+- Filter by `level` (info, warn, error)
+
+## Admin Web Interface
+
+Access the admin UI at `http://localhost:3000/derp` (configurable via `ADMIN_PATH`) after starting the server.
+
+Features:
+- **Links Tab** - Add, update, and delete links with hit counts
+- **Recent Hits Tab** - View the latest 100 hits with all tracking data
+- **IP Blacklist Tab** - Manage blocked IPs
+- **API Tokens Tab** - Generate and revoke API tokens for external access
+- **Export Tab** - Download hits as CSV or download the entire database
+
+## Client-Side Analytics
+
+The service includes a lightweight tracking script (`/scripts.js`) for embedding on your own pages:
+
 ```html
-<img src="https://yourdomain.com/p/email-campaign-1" width="1" height="1" />
+<!-- Optional: preload variables for initial page view -->
+<script>
+  window.mmmdata = {label: 'landing', vars: {funnel_stage: 'awareness', plan: 'free'}}
+</script>
+
+<!-- Load tracking script -->
+<script src="https://your-domain.com/scripts.js" async></script>
+
+<!-- Track custom events -->
+<script>
+  mm('event', { 
+    label: 'button_click', 
+    vars: { category: 'nav', button_id: 'signup' } 
+  });
+</script>
 ```
 
-#### `GET /health`
-Health check endpoint.
+**Features:**
+- Automatic page view tracking on load
+- Session and visitor cookies for attribution
+- Bot detection via `isbot`
+- Captures timezone, locale, viewport size, and device pixel ratio
+- Custom variables via `window.mmmdata` or per-event `vars`
+- Renamed to `mm()` to reduce ad-blocker interference
 
-**Response:**
-```json
-{
-  "status": "ok",
-  "links": 5,
-  "hits": 1234
-}
+**Data captured:**
+- All hits are stored in the `hits` table with `type='page'` or `type='event'`
+- The `slug` field contains a synthetic identifier (e.g., `page:https://...` or `event:button_click`)
+- Custom variables are stored in the `extra` JSON field under the `vars` key
+
+## UTM Tracking & Attribution
+
+All query parameters are automatically captured and stored as JSON in the `query_params` column. This is perfect for UTM tracking:
+
+```
+http://localhost:3000/l/signup?utm_source=twitter&utm_campaign=launch
 ```
 
-### Admin Endpoints
+Query the data with SQLite:
+```sql
+-- Count conversions by UTM source
+SELECT 
+  json_extract(query_params, '$.utm_source') as source,
+  COUNT(*) as count
+FROM hits 
+WHERE query_params IS NOT NULL
+GROUP BY source
+ORDER BY count DESC;
+```
 
-All admin endpoints require:
-- **Authorization header:** `Bearer YOUR_PASSWORD`
-- **IP whitelist:** Request must come from allowed IP
+See `QUERIES.md` for more analytics query examples.
 
-#### `POST /admin/links`
-Add a new link or update existing one.
+## Configuration
 
-**Request:**
+Environment variables in `.env`:
+
 ```bash
-curl -X POST http://localhost:3000/admin/links \
-  -H "Authorization: Bearer changeme" \
-  -H "Content-Type: application/json" \
-  -d '{"slug": "github", "destination": "https://github.com"}'
+PORT=3000
+ADMIN_PASSWORD=changeme
+ALLOWED_ADMIN_IPS=127.0.0.1,192.168.1.100
+ADMIN_PATH=/derp                   # Admin UI path
+ROOT_REDIRECT=https://example.com  # Where '/' redirects
+NOT_FOUND_REDIRECT=https://example.com # Unknown paths (HTML clients) redirect here
+SESSION_WINDOW_MIN=30              # Session cookie window (minutes)
+USER_COOKIE_MAX_DAYS=730           # Long-lived user cookie lifetime (days)
+COOKIE_SECURE=false                # Set 'true' in production behind HTTPS
+# Use '*' for development only
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "slug": "github",
-  "destination": "https://github.com"
-}
-```
+## Development
 
-#### `DELETE /admin/links/:slug`
-Remove a link.
-
-**Request:**
 ```bash
-curl -X DELETE http://localhost:3000/admin/links/github \
-  -H "Authorization: Bearer changeme"
-```
+# Run with auto-reload
+npm run dev
 
-**Response:**
-```json
-{
-  "success": true,
-  "slug": "github"
-}
-```
+# Build TypeScript
+npm run build
 
-#### `GET /admin/links`
-List all links with hit counts.
-
-**Request:**
-```bash
-curl http://localhost:3000/admin/links \
-  -H "Authorization: Bearer changeme"
-```
-
-**Response:**
-```json
-{
-  "links": [
-    {
-      "slug": "github",
-      "destination": "https://github.com",
-      "hits": 42
-    }
-  ]
-}
-```
-
-#### `GET /admin/stats`
-Get aggregated statistics.
-
-**Query Parameters:**
-- `slug` (optional) - Filter by slug
-- `type` (optional) - Filter by type (redirect/pixel)
-
-**Request:**
-```bash
-curl "http://localhost:3000/admin/stats?slug=github" \
-  -H "Authorization: Bearer changeme"
-```
-
-**Response:**
-```json
-{
-  "total": 42,
-  "byType": { "redirect": 42 },
-  "bySlug": { "github": 42 },
-  "byIP": { "192.168.1.1": 5 },
-  "byBrowser": { "Chrome 120": 30 },
-  "byOS": { "Mac OS 14": 25 },
-  "byDevice": { "desktop": 40 },
-  "recent": [...]
-}
-```
-
-#### `GET /admin/export/csv`
-Export hit data as CSV.
-
-**Query Parameters:**
-- `slug` (optional) - Filter by slug
-- `type` (optional) - Filter by type (redirect/pixel)
-
-**Request:**
-```bash
-curl "http://localhost:3000/admin/export/csv" \
-  -H "Authorization: Bearer changeme" \
-  -o hits.csv
+# Watch mode
+npm run dev:watch
 ```
 
 ## Deployment
 
-### nginx Configuration
+1. Set a strong `ADMIN_PASSWORD` in `.env`
+2. Restrict `ALLOWED_ADMIN_IPS` to trusted addresses
+3. Use a reverse proxy (nginx/Caddy) with HTTPS
+4. Firewall the Node.js port (only allow reverse proxy)
+5. Set up a systemd service for auto-restart
+6. Regularly backup `data/app.db`
 
-```nginx
-server {
-    listen 80;
-    server_name yourdomain.com;
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-### Apache Configuration
-
-```apache
-<VirtualHost *:80>
-    ServerName yourdomain.com
-
-    ProxyPreserveHost On
-    ProxyPass / http://localhost:3000/
-    ProxyPassReverse / http://localhost:3000/
-
-    RequestHeader set X-Forwarded-Proto "http"
-    RequestHeader set X-Forwarded-Port "80"
-</VirtualHost>
-```
-
-### systemd Service
-
-Create `/etc/systemd/system/link-shortener.service`:
-
+Example systemd service:
 ```ini
 [Unit]
-Description=Link Shortener Service
+Description=Link Shortener
 After=network.target
 
 [Service]
 Type=simple
 User=www-data
-WorkingDirectory=/path/to/link_shortener
-ExecStart=/usr/bin/node server.js
-Restart=on-failure
+WorkingDirectory=/opt/link_shortener
+ExecStart=/usr/bin/npm start
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable and start:
-```bash
-sudo systemctl enable link-shortener
-sudo systemctl start link-shortener
+## Project Structure
+
+```
+.
+├── src/
+│   ├── server.ts       # Main Express server
+│   └── db.ts           # Database schema and prepared statements
+├── public/
+│   └── index.html      # Admin web interface
+├── data/
+│   └── app.db          # SQLite database (auto-created)
+├── dist/               # Compiled JavaScript (auto-generated)
+├── tsconfig.json       # TypeScript configuration
+├── package.json        # Dependencies and scripts
+├── QUERIES.md          # Example SQL queries for analytics
+└── README.md           # This file
 ```
 
-## Data Storage
+## Migration from JavaScript
 
-Data is stored in the `data/` directory:
-- `links.json` - Link mappings (slug → destination)
-- `hits.json` - All tracking data
+If you have an existing `data/links.json` file, it will be automatically migrated to the database on first startup and backed up to `data/links.json.backup`.
 
-Hits are batched and written to disk every 5 seconds to maintain performance.
-
-## Security Notes
-
-1. **Change the default password** in `.env`
-2. **Restrict admin IPs** to trusted addresses only
-3. **Use HTTPS** in production (configure in reverse proxy)
-4. **Firewall** the Node.js port (only allow reverse proxy access)
-5. **Regular backups** of the `data/` directory
-
-## Performance
-
-- In-memory Map for O(1) link lookups
-- Batched disk writes to avoid I/O blocking
-- Minimal dependencies
-- No database overhead
-- Typical redirect time: <5ms
+The old `hits.json` file is no longer used - hits are now stored in the database with improved rate limiting.
 
 ## License
 
