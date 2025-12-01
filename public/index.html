@@ -588,12 +588,50 @@
       loadTokens();
     }
 
-    function exportCSV() {
-      window.open(`/admin/export/csv?_auth=${password}`, '_blank');
+    async function exportCSV() {
+      try {
+        const res = await fetch('/admin/export/csv', {
+          headers: { 'Authorization': `Bearer ${password}` }
+        });
+        if (!res.ok) {
+          alert('Failed to export CSV');
+          return;
+        }
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `hits-${Date.now()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      } catch (e) {
+        alert('Failed to export CSV');
+      }
     }
 
-    function downloadDB() {
-      window.open(`/admin/download/db?_auth=${password}`, '_blank');
+    async function downloadDB() {
+      try {
+        const res = await fetch('/admin/download/db', {
+          headers: { 'Authorization': `Bearer ${password}` }
+        });
+        if (!res.ok) {
+          alert('Failed to download database');
+          return;
+        }
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'app.db';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      } catch (e) {
+        alert('Failed to download database');
+      }
     }
   </script>
 </body>

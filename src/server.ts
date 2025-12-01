@@ -75,6 +75,9 @@ const SESSION_WINDOW_MIN = Math.max(1, parseInt(process.env.SESSION_WINDOW_MIN |
 const USER_COOKIE_MAX_DAYS = Math.max(1, parseInt(process.env.USER_COOKIE_MAX_DAYS || '730', 10));
 const COOKIE_SECURE = (process.env.COOKIE_SECURE || 'false').toLowerCase() === 'true';
 
+// Rate limiting configuration (in seconds, 0 = disabled)
+const RATE_LIMIT_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW || '60', 10);
+
 // Configuration
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
@@ -234,7 +237,15 @@ function trackHit(type: 'redirect' | 'pixel', slug: string, req: Request, sessio
   if (req.query.locale) extraObj['locale'] = sanitizeString(req.query.locale as string, 20);
   const extraJson = Object.keys(extraObj).length ? JSON.stringify(extraObj) : null;
 
-  // Insert into database (will be ignored if duplicate within same minute)
+  // Generate rate limit key based on configured window
+  let minuteKey: string | null = null;
+  if (RATE_LIMIT_WINDOW > 0) {
+    const date = new Date(timestamp);
+    const windowSeconds = Math.floor(date.getTime() / 1000 / RATE_LIMIT_WINDOW) * RATE_LIMIT_WINDOW;
+    minuteKey = `${ip}|${slug}|${windowSeconds}`;
+  }
+
+  // Insert into database (will be ignored if duplicate within rate limit window)
   try {
     const result = hitStatements.insert.run(
       type,
@@ -250,7 +261,8 @@ function trackHit(type: 'redirect' | 'pixel', slug: string, req: Request, sessio
       queryParams,
       sessionId || null,
       visitorId || null,
-      extraJson
+      extraJson,
+      minuteKey
     );
     
     // Only log if actually inserted (not rate-limited)
@@ -297,6 +309,7 @@ app.get('/scripts.js', (req, res) => {
 // Root redirect (configurable, defaults to example.com)
 const ROOT_REDIRECT = process.env.ROOT_REDIRECT || 'https://example.com';
 app.get('/', (req, res) => {
+  trackHit('redirect', '__root__', req);
   res.redirect(302, ROOT_REDIRECT);
 });
 
@@ -422,13 +435,23 @@ app.post('/a/collect', (req: Request, res: Response) => {
   if (original.viewport) extra.viewport = sanitizeString(original.viewport, 50);
   const extraJson = JSON.stringify(extra);
 
+  // Generate rate limit key
+  const timestamp = new Date().toISOString();
+  const ip = getClientIP(req);
+  let minuteKey: string | null = null;
+  if (RATE_LIMIT_WINDOW > 0) {
+    const date = new Date(timestamp);
+    const windowSeconds = Math.floor(date.getTime() / 1000 / RATE_LIMIT_WINDOW) * RATE_LIMIT_WINDOW;
+    minuteKey = `${ip}|${slug}|${windowSeconds}`;
+  }
+
   // Record hit
   try {
     hitStatements.insert.run(
       atype, // type
       slug,  // slug surrogate
-      getClientIP(req),
-      new Date().toISOString(),
+      ip,
+      timestamp,
       (req.headers['user-agent']||'Unknown') as string,
       parseUserAgent(req).browser,
       parseUserAgent(req).os,
@@ -438,7 +461,8 @@ app.post('/a/collect', (req: Request, res: Response) => {
       null, // query_params
       sessionId || null,
       visitorId || null,
-      extraJson
+      extraJson,
+      minuteKey
     );
   } catch (e) {
     // fall through; still return ok so beacons don't retry forever
@@ -898,6 +922,9 @@ app.delete('/api/blacklist/:ip', tokenAuth(['blacklist']), (req, res) => {
 // 404 catch-all: redirect HTML clients, JSON for APIs
 const NOT_FOUND_REDIRECT = process.env.NOT_FOUND_REDIRECT || process.env.ROOT_REDIRECT || 'https://example.com';
 app.use((req, res) => {
+  // Track 404 hits
+  trackHit('redirect', `__404__:${req.path}`, req);
+  
   // Log 404s to database
   try {
     logStatements.insert.run(

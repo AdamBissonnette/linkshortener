@@ -29,6 +29,7 @@ db.exec(`
 `);
 
 // Create hits table with rate limiting
+// Note: minute_key is now a regular column (not generated) to support configurable rate limit windows
 db.exec(`
   CREATE TABLE IF NOT EXISTS hits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,17 +47,24 @@ db.exec(`
     session_id TEXT,
     visitor_id TEXT,
     extra TEXT,
+    minute_key TEXT,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-    
-    -- Rate limiting: unique constraint on (ip, slug, minute)
-    -- This prevents spam by allowing only one hit per IP per slug per minute
-    minute_key TEXT GENERATED ALWAYS AS (
-      ip || '|' || slug || '|' || strftime('%Y-%m-%d %H:%M', timestamp)
-    ) STORED,
     
     UNIQUE(minute_key)
   )
 `);
+
+// Create index on minute_key for faster lookups
+db.exec(`CREATE INDEX IF NOT EXISTS idx_hits_minute_key ON hits(minute_key)`);
+
+// For backwards compatibility: try to drop the generated column constraint if it exists
+try {
+  // This will fail silently if the column was already a regular column
+  db.exec(`ALTER TABLE hits DROP COLUMN minute_key`);
+  db.exec(`ALTER TABLE hits ADD COLUMN minute_key TEXT`);
+} catch (_) {
+  // Column already exists as regular column or can't be modified
+}
 
 // Migration for existing DBs
 try { db.exec(`ALTER TABLE hits ADD COLUMN session_id TEXT`); } catch (_) {}
@@ -269,12 +277,12 @@ export const logStatements = {
 export const hitStatements = {
   insert: db.prepare<[
     string, string, string, string, string, string, string, string,
-    string, string, string | null, string | null, string | null, string | null
+    string, string, string | null, string | null, string | null, string | null, string | null
   ]>(`
     INSERT INTO hits (
       type, slug, ip, timestamp, user_agent, browser, os, device,
-      referer, accept_language, query_params, session_id, visitor_id, extra
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      referer, accept_language, query_params, session_id, visitor_id, extra, minute_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(minute_key) DO NOTHING
   `),
   
