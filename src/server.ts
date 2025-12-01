@@ -134,6 +134,57 @@ function parseUserAgent(req: Request): ParsedUA {
   };
 }
 
+// Input sanitization helpers
+function sanitizeString(input: string | undefined | null, maxLength: number = 255): string {
+  if (!input) return '';
+  // Convert to string and truncate
+  const str = String(input).slice(0, maxLength);
+  // Remove null bytes and other dangerous characters
+  return str.replace(/\x00/g, '');
+}
+
+function sanitizeQueryParams(params: Record<string, any>): Record<string, any> {
+  const sanitized: Record<string, any> = {};
+  for (const [key, value] of Object.entries(params)) {
+    // Truncate keys to 50 chars
+    const safeKey = sanitizeString(key, 50);
+    if (!safeKey) continue;
+    
+    // Truncate values to 200 chars for query params
+    if (typeof value === 'string') {
+      sanitized[safeKey] = sanitizeString(value, 200);
+    } else if (Array.isArray(value)) {
+      sanitized[safeKey] = value.slice(0, 10).map(v => sanitizeString(String(v), 200));
+    } else {
+      sanitized[safeKey] = sanitizeString(String(value), 200);
+    }
+  }
+  return sanitized;
+}
+
+function sanitizeJSON(obj: Record<string, any>, maxDepth: number = 3): Record<string, any> {
+  if (maxDepth <= 0) return {};
+  
+  const sanitized: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const safeKey = sanitizeString(key, 50);
+    if (!safeKey) continue;
+    
+    if (typeof value === 'string') {
+      sanitized[safeKey] = sanitizeString(value, 500);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      sanitized[safeKey] = value;
+    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      sanitized[safeKey] = sanitizeJSON(value, maxDepth - 1);
+    } else if (Array.isArray(value)) {
+      sanitized[safeKey] = value.slice(0, 20).map(v => 
+        typeof v === 'string' ? sanitizeString(v, 200) : v
+      );
+    }
+  }
+  return sanitized;
+}
+
 // Cookie helpers
 function getCookie(req: Request, name: string): string | undefined {
   const raw = req.headers['cookie'];
@@ -157,14 +208,14 @@ function trackHit(type: 'redirect' | 'pixel', slug: string, req: Request, sessio
   }
   
   const ua = parseUserAgent(req);
-  const referer = (req.headers['referer'] || req.headers['referrer'] || 'Direct') as string;
-  const acceptLanguage = (req.headers['accept-language'] || 'Unknown') as string;
-  const userAgent = (req.headers['user-agent'] || 'Unknown') as string;
+  const referer = sanitizeString((req.headers['referer'] || req.headers['referrer'] || 'Direct') as string, 500);
+  const acceptLanguage = sanitizeString((req.headers['accept-language'] || 'Unknown') as string, 100);
+  const userAgent = sanitizeString((req.headers['user-agent'] || 'Unknown') as string, 500);
   const timestamp = new Date().toISOString();
   
-  // Capture query parameters as JSON string
+  // Capture query parameters as JSON string (sanitized)
   const queryParams = Object.keys(req.query).length > 0 
-    ? JSON.stringify(req.query) 
+    ? JSON.stringify(sanitizeQueryParams(req.query)) 
     : null;
   
   // Build extra JSON (client hints, optional tz/locale override)
@@ -174,13 +225,13 @@ function trackHit(type: 'redirect' | 'pixel', slug: string, req: Request, sessio
   const chMobile = req.headers['sec-ch-ua-mobile'];
   const dnt = req.headers['dnt'];
   const accept = req.headers['accept'];
-  if (chUa) extraObj['ch_ua'] = chUa;
-  if (chPlat) extraObj['ch_platform'] = chPlat;
-  if (chMobile) extraObj['ch_mobile'] = chMobile;
-  if (dnt) extraObj['dnt'] = dnt;
-  if (accept) extraObj['accept'] = accept;
-  if (req.query.tz) extraObj['tz'] = req.query.tz; // optional client-provided
-  if (req.query.locale) extraObj['locale'] = req.query.locale;
+  if (chUa) extraObj['ch_ua'] = sanitizeString(chUa as string, 200);
+  if (chPlat) extraObj['ch_platform'] = sanitizeString(chPlat as string, 50);
+  if (chMobile) extraObj['ch_mobile'] = sanitizeString(chMobile as string, 10);
+  if (dnt) extraObj['dnt'] = sanitizeString(dnt as string, 10);
+  if (accept) extraObj['accept'] = sanitizeString(accept as string, 200);
+  if (req.query.tz) extraObj['tz'] = sanitizeString(req.query.tz as string, 50);
+  if (req.query.locale) extraObj['locale'] = sanitizeString(req.query.locale as string, 20);
   const extraJson = Object.keys(extraObj).length ? JSON.stringify(extraObj) : null;
 
   // Insert into database (will be ignored if duplicate within same minute)
@@ -327,12 +378,12 @@ app.post('/a/collect', (req: Request, res: Response) => {
   // CORS for lightweight use across sites
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  // Derive type and label
+  // Derive type and label (sanitized)
   const body = typeof req.body === 'object' && req.body ? req.body as any : {};
-  const atype = (body.type || 'page') as string; // 'page' | 'event'
-  const label = (body.label || '') as string;
-  const url = (body.url || req.headers['referer'] || '') as string;
-  const slug = atype === 'event' ? `event:${label||'generic'}` : `page:${url.toString().slice(0,200)}`;
+  const atype = sanitizeString(body.type || 'page', 20); // 'page' | 'event'
+  const label = sanitizeString(body.label || '', 100);
+  const url = sanitizeString(body.url || req.headers['referer'] || '', 500);
+  const slug = atype === 'event' ? `event:${label||'generic'}` : `page:${url.slice(0,200)}`;
 
   // Set cookies like pixel path so sessions/users are tracked consistently
   const uidName = 'ls_uid';
@@ -358,15 +409,17 @@ app.post('/a/collect', (req: Request, res: Response) => {
   if (COOKIE_SECURE) sessDirectives.push('Secure');
   res.setHeader('Set-Cookie', [uidDirectives.join('; '), sessDirectives.join('; ')]);
 
-  // Build extra
+  // Build extra (sanitized)
   const extra: Record<string, any> = { is_bot: isbot((req.headers['user-agent']||'') as string) ? 1 : 0 };
-  if (body.title) extra.title = body.title;
-  if (body.tz) extra.tz = body.tz;
-  if (body.locale) extra.locale = body.locale;
-  if (body.vars && typeof body.vars === 'object') extra.vars = body.vars;
+  if (body.title) extra.title = sanitizeString(body.title, 200);
+  if (body.tz) extra.tz = sanitizeString(body.tz, 50);
+  if (body.locale) extra.locale = sanitizeString(body.locale, 20);
+  if (body.vars && typeof body.vars === 'object') {
+    extra.vars = sanitizeJSON(body.vars);
+  }
   const original = body as any;
-  if (original.dpr) extra.dpr = original.dpr;
-  if (original.viewport) extra.viewport = original.viewport;
+  if (original.dpr) extra.dpr = typeof original.dpr === 'number' ? original.dpr : parseFloat(original.dpr) || 1;
+  if (original.viewport) extra.viewport = sanitizeString(original.viewport, 50);
   const extraJson = JSON.stringify(extra);
 
   // Record hit
@@ -447,10 +500,27 @@ app.get('/p/:slug', (req, res) => {
 
 // Admin API - Add/Update link
 app.post('/admin/links', authAdmin, (req, res) => {
-  const { slug, destination } = req.body;
+  const rawSlug = req.body.slug;
+  const rawDestination = req.body.destination;
   
-  if (!slug || !destination) {
+  if (!rawSlug || !rawDestination) {
     return res.status(400).json({ error: 'slug and destination are required' });
+  }
+  
+  // Validate and sanitize
+  const slug = sanitizeString(rawSlug, 100);
+  const destination = sanitizeString(rawDestination, 2000);
+  
+  // Validate slug format (alphanumeric, dashes, underscores only)
+  if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
+    return res.status(400).json({ error: 'slug must contain only letters, numbers, dashes, and underscores' });
+  }
+  
+  // Validate destination is a valid URL
+  try {
+    new URL(destination);
+  } catch {
+    return res.status(400).json({ error: 'destination must be a valid URL' });
   }
   
   try {
@@ -545,11 +615,22 @@ app.post('/admin/tokens', authAdmin, (req, res) => {
   if (!name || !Array.isArray(scopes) || scopes.length === 0) {
     return res.status(400).json({ error: 'name and scopes[] are required' });
   }
-  const scopeStr = scopes.join(',');
+  
+  // Sanitize token name
+  const safeName = sanitizeString(name, 100);
+  
+  // Validate scopes
+  const validScopes = ['links', 'hits', 'blacklist', 'export', 'stats'];
+  const safeScopes = scopes.filter(s => validScopes.includes(s));
+  if (safeScopes.length === 0) {
+    return res.status(400).json({ error: 'at least one valid scope is required' });
+  }
+  
+  const scopeStr = safeScopes.join(',');
   const token = require('crypto').randomBytes(24).toString('hex');
   try {
-    tokenStatements.create.run(name, token, scopeStr);
-    res.json({ success: true, token, name, scopes });
+    tokenStatements.create.run(safeName, token, scopeStr);
+    res.json({ success: true, token, name: safeName, scopes: safeScopes });
   } catch (e) {
     res.status(500).json({ error: 'Failed to create token' });
   }
@@ -645,14 +726,26 @@ app.get('/admin/blacklist', authAdmin, (req, res) => {
 });
 
 app.post('/admin/blacklist', authAdmin, (req, res) => {
-  const { ip, reason } = req.body;
+  const rawIp = req.body.ip;
+  const rawReason = req.body.reason;
   
-  if (!ip) {
+  if (!rawIp) {
     return res.status(400).json({ error: 'ip is required' });
   }
   
+  // Sanitize inputs
+  const ip = sanitizeString(rawIp, 50);
+  const reason = rawReason ? sanitizeString(rawReason, 200) : null;
+  
+  // Basic IP validation (IPv4 or IPv6)
+  const ipv4Regex = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/;
+  const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
+  if (!ipv4Regex.test(ip) && !ipv6Regex.test(ip)) {
+    return res.status(400).json({ error: 'invalid IP address format' });
+  }
+  
   try {
-    blacklistStatements.insert.run(ip, reason || null);
+    blacklistStatements.insert.run(ip, reason);
     res.json({ success: true, ip, reason });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add to blacklist' });
@@ -701,8 +794,24 @@ app.get('/api/links', tokenAuth(['links']), (req, res) => {
   res.json({ links });
 });
 app.post('/api/links', tokenAuth(['links']), (req, res) => {
-  const { slug, destination } = req.body;
-  if (!slug || !destination) return res.status(400).json({ error: 'slug and destination are required' });
+  const rawSlug = req.body.slug;
+  const rawDestination = req.body.destination;
+  if (!rawSlug || !rawDestination) return res.status(400).json({ error: 'slug and destination are required' });
+  
+  // Validate and sanitize
+  const slug = sanitizeString(rawSlug, 100);
+  const destination = sanitizeString(rawDestination, 2000);
+  
+  if (!/^[a-zA-Z0-9_-]+$/.test(slug)) {
+    return res.status(400).json({ error: 'slug must contain only letters, numbers, dashes, and underscores' });
+  }
+  
+  try {
+    new URL(destination);
+  } catch {
+    return res.status(400).json({ error: 'destination must be a valid URL' });
+  }
+  
   linkStatements.insert.run(slug, destination);
   res.json({ success: true });
 });
@@ -764,9 +873,20 @@ app.get('/api/blacklist', tokenAuth(['blacklist']), (req, res) => {
   res.json({ blacklist: list });
 });
 app.post('/api/blacklist', tokenAuth(['blacklist']), (req, res) => {
-  const { ip, reason } = req.body;
-  if (!ip) return res.status(400).json({ error: 'ip is required' });
-  blacklistStatements.insert.run(ip, reason || null);
+  const rawIp = req.body.ip;
+  const rawReason = req.body.reason;
+  if (!rawIp) return res.status(400).json({ error: 'ip is required' });
+  
+  const ip = sanitizeString(rawIp, 50);
+  const reason = rawReason ? sanitizeString(rawReason, 200) : null;
+  
+  const ipv4Regex = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/;
+  const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
+  if (!ipv4Regex.test(ip) && !ipv6Regex.test(ip)) {
+    return res.status(400).json({ error: 'invalid IP address format' });
+  }
+  
+  blacklistStatements.insert.run(ip, reason);
   res.json({ success: true });
 });
 app.delete('/api/blacklist/:ip', tokenAuth(['blacklist']), (req, res) => {
