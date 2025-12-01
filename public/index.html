@@ -172,6 +172,9 @@
       <input type="password" id="password" placeholder="Admin Password" onkeypress="if(event.key==='Enter')authenticate()">
       <button onclick="authenticate()">Login</button>
       <div id="authStatus"></div>
+      <div style="margin-top: 10px; text-align: center;">
+        <a href="#" onclick="localStorage.removeItem('adminPassword'); location.reload(); return false;" style="color: #888; font-size: 12px; text-decoration: none;">Clear saved password</a>
+      </div>
     </div>
 
     <!-- Main Content -->
@@ -311,6 +314,11 @@
       const savedPassword = localStorage.getItem('adminPassword');
       if (savedPassword) {
         password = savedPassword;
+        // Show a loading indicator
+        const authSection = document.getElementById('authSection');
+        const originalContent = authSection.innerHTML;
+        authSection.innerHTML = '<p style="text-align: center; color: #888;">Authenticating...</p>';
+        
         // Try to authenticate with saved password
         fetch('/admin/links', {
           headers: { 'Authorization': `Bearer ${password}` }
@@ -322,14 +330,18 @@
             document.getElementById('logoutBtn').style.display = 'block';
             loadLinks();
           } else {
-            // Invalid saved password, clear it
+            // Invalid saved password, clear it and restore login form
             localStorage.removeItem('adminPassword');
             password = '';
+            authSection.innerHTML = originalContent;
+            showStatus('authStatus', 'Saved password expired - please login again', 'error');
           }
         })
         .catch(() => {
           localStorage.removeItem('adminPassword');
           password = '';
+          authSection.innerHTML = originalContent;
+          showStatus('authStatus', 'Connection failed - please try again', 'error');
         });
       }
     });
