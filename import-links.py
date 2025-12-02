@@ -13,7 +13,7 @@ import urllib.error
 from typing import Tuple
 
 API_URL = "https://goto.adamnant.com"
-API_TOKEN = "6f690895040606521474ad5229a6c96d1219eb849831c19c"
+API_TOKEN = "5c26f0a4e3f4ee6ef91bdd7e31561c56a5db5f492724abc9"
 
 
 def create_link(slug: str, destination: str) -> Tuple[bool, str, int]:

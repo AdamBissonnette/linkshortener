@@ -306,6 +306,11 @@ app.get('/scripts.js', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'scripts.js'));
 });
 
+// Serve favicon (no tracking)
+app.get('/favicon.ico', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'favicon.ico'));
+});
+
 // Root redirect (configurable, defaults to example.com)
 const ROOT_REDIRECT = process.env.ROOT_REDIRECT || 'https://example.com';
 app.get('/', (req, res) => {

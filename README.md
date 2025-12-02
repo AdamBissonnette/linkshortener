@@ -39,7 +39,30 @@ npm start
 npm run dev
 ```
 
-Then open `http://localhost:3000` in your browser to access the admin interface.
+Then open `http://localhost:3000/derp` (or your configured `ADMIN_PATH`) to access the admin interface.
+
+## Documentation
+
+- **[Quick Start Guide](docs/QUICKSTART.md)** - Detailed setup instructions
+- **[Production Deployment](docs/PRODUCTION.md)** - Complete production checklist and best practices
+- **[Security Guide](docs/SECURITY.md)** - Input validation, authentication, and best practices
+- **[Analytics Queries](docs/QUERIES.md)** - SQL examples for analyzing your data
+- **[Changelog](docs/CHANGELOG.md)** - Version history and changes
+
+## Production Deployment
+
+Before deploying to production, ensure you:
+
+1. **Change default password**: Set a strong `ADMIN_PASSWORD` in `.env`
+2. **Restrict admin IPs**: Set `ALLOWED_ADMIN_IPS` to specific trusted IPs
+3. **Enable secure cookies**: Set `COOKIE_SECURE=true` when behind HTTPS
+4. **Configure rate limiting**: Set `RATE_LIMIT_WINDOW` (in seconds, 0 to disable)
+5. **Set up monitoring**: Point external monitoring at `/health` endpoint
+6. **Enable HTTPS**: Use a reverse proxy (Caddy/Nginx) with TLS
+7. **Backup database**: Regularly backup `data/app.db`
+8. **Use systemd/pm2**: Set up automatic restart on failure
+
+See [docs/SECURITY.md](docs/SECURITY.md) for detailed production best practices.
 
 ## Architecture
 

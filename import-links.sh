@@ -7,7 +7,7 @@
 set -e
 
 API_URL="${API_URL:-https://goto.adamnant.com}"
-API_TOKEN="${API_TOKEN:-6f690895040606521474ad5229a6c96d1219eb849831c19c}"
+API_TOKEN="${API_TOKEN:-5c26f0a4e3f4ee6ef91bdd7e31561c56a5db5f492724abc9}"
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <csv_file>"

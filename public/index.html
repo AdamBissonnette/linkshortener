@@ -268,13 +268,24 @@
         <div class="card">
           <h2>Create API Token</h2>
           <input type="text" id="tokenName" placeholder="Token name (e.g., automation-script)">
-          <div style="margin: 8px 0 12px;">
-            <label><input type="checkbox" id="scope_links"> Links</label>
-            <label style="margin-left:12px;"><input type="checkbox" id="scope_hits"> Hits</label>
-            <label style="margin-left:12px;"><input type="checkbox" id="scope_blacklist"> Blacklist</label>
-            <label style="margin-left:12px;"><input type="checkbox" id="scope_export"> Export</label>
+          <div style="margin: 12px 0; display: flex; align-items: center; gap: 20px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="scope_links" style="margin: 0; cursor: pointer;"> Links
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="scope_hits" style="margin: 0; cursor: pointer;"> Hits
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="scope_blacklist" style="margin: 0; cursor: pointer;"> Blacklist
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="scope_export" style="margin: 0; cursor: pointer;"> Export
+            </label>
           </div>
-          <button onclick="createToken()">Generate Token</button>
+          <div style="display: flex; gap: 10px;">
+            <button onclick="createToken()">Generate Token</button>
+            <button onclick="selectAllScopes()" class="secondary">Select All</button>
+          </div>
           <div id="tokenStatus"></div>
         </div>
         <div class="card">
@@ -547,6 +558,21 @@
       `).join('');
     }
 
+    function selectAllScopes() {
+      document.getElementById('scope_links').checked = true;
+      document.getElementById('scope_hits').checked = true;
+      document.getElementById('scope_blacklist').checked = true;
+      document.getElementById('scope_export').checked = true;
+    }
+
+    function copyToken(token) {
+      navigator.clipboard.writeText(token).then(() => {
+        alert('Token copied to clipboard!');
+      }).catch(() => {
+        alert('Failed to copy token');
+      });
+    }
+
     async function loadTokens() {
       const res = await fetch('/admin/tokens', { headers: { 'Authorization': `Bearer ${password}` }});
       if (!res.ok) { showStatus('tokenStatus','Failed to load tokens','error'); return; }
@@ -560,6 +586,7 @@
           <td>${t.last_used_at ? new Date(t.last_used_at*1000).toLocaleString() : '-'}</td>
           <td class="truncate" title="${t.token || ''}">${t.token || '(hidden)'}</td>
           <td class="actions">
+            <button onclick="copyToken('${t.token}')" class="success">Copy</button>
             <button class="danger" onclick="revokeToken(${t.id})">Revoke</button>
           </td>
         </tr>
@@ -580,7 +607,10 @@
       });
       if (!res.ok) { showStatus('tokenStatus','Failed to create token','error'); return; }
       const data = await res.json();
-      showStatus('tokenStatus', `Token created: ${data.token}`, 'success');
+      const statusMsg = `Token created! <button onclick="copyToken('${data.token}')" style="margin-left: 10px;">Copy Token</button>`;
+      showStatus('tokenStatus', statusMsg, 'success');
+      document.getElementById('tokenName').value = '';
+      selectAllScopes(); // Reset to all selected for next token
       loadTokens();
     }
 
