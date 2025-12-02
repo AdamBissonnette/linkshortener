@@ -78,6 +78,47 @@ const COOKIE_SECURE = (process.env.COOKIE_SECURE || 'false').toLowerCase() === '
 // Rate limiting configuration (in seconds, 0 = disabled)
 const RATE_LIMIT_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW || '60', 10);
 
+// Malicious path patterns to auto-blacklist
+const MALICIOUS_PATTERNS = [
+  /\.env$/i,
+  /\.git/i,
+  /wp-config/i,
+  /wp-admin/i,
+  /phpMyAdmin/i,
+  /\.config\./i,
+  /\.aws/i,
+  /\.ssh/i,
+  /composer\.json/i,
+  /package\.json/i,
+  /\.sql$/i,
+  /backup/i,
+  /database/i,
+  /admin\.php/i,
+  /login\.php/i
+];
+
+// Check if IP is an admin IP
+function isAdminIP(ip: string): boolean {
+  return ALLOWED_ADMIN_IPS.includes(ip) || ALLOWED_ADMIN_IPS.includes('*');
+}
+
+// Check if path looks malicious
+function isMaliciousPath(path: string): boolean {
+  return MALICIOUS_PATTERNS.some(pattern => pattern.test(path));
+}
+
+// Auto-blacklist suspicious IPs
+function autoBlacklistIP(ip: string, reason: string): void {
+  if (isAdminIP(ip)) return; // Never blacklist admin IPs
+  
+  try {
+    blacklistStatements.insert.run(ip, `Auto-blocked: ${reason}`);
+    console.log(`[AUTO-BLACKLIST] ${ip} - ${reason}`);
+  } catch (err) {
+    // IP might already be blacklisted
+  }
+}
+
 // Configuration
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
@@ -222,7 +263,8 @@ function trackHit(type: 'redirect' | 'pixel', slug: string, req: Request, sessio
     : null;
   
   // Build extra JSON (client hints, optional tz/locale override)
-  const extraObj: Record<string, any> = { is_bot: isbot(userAgent) ? 1 : 0 };
+  // Skip bot marking for admin IPs
+  const extraObj: Record<string, any> = { is_bot: (!isAdminIP(ip) && isbot(userAgent)) ? 1 : 0 };
   const chUa = req.headers['sec-ch-ua'];
   const chPlat = req.headers['sec-ch-ua-platform'];
   const chMobile = req.headers['sec-ch-ua-mobile'];
@@ -309,6 +351,19 @@ app.get('/scripts.js', (req, res) => {
 // Serve favicon (no tracking)
 app.get('/favicon.ico', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'favicon.ico'));
+});
+
+// Serve robots.txt (no tracking)
+app.get('/robots.txt', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'robots.txt'));
+});
+
+// Honeypot trap - auto-blacklists non-admin IPs
+app.get('/definitelyadminportal', (req, res) => {
+  const ip = getClientIP(req);
+  autoBlacklistIP(ip, 'Honeypot trap');
+  trackHit('redirect', '__honeypot__', req);
+  res.status(404).send('Not found');
 });
 
 // Root redirect (configurable, defaults to example.com)
@@ -545,6 +600,11 @@ app.post('/admin/links', authAdmin, (req, res) => {
     return res.status(400).json({ error: 'slug must contain only letters, numbers, dashes, and underscores' });
   }
   
+  // Reject malicious slug patterns
+  if (isMaliciousPath(slug)) {
+    return res.status(400).json({ error: 'slug contains suspicious patterns and was rejected' });
+  }
+  
   // Validate destination is a valid URL
   try {
     new URL(destination);
@@ -676,8 +736,20 @@ app.delete('/admin/tokens/:id', authAdmin, (req, res) => {
 // Admin API - Get recent hits
 app.get('/admin/hits', authAdmin, (req, res) => {
   const limit = parseInt(req.query.limit as string || '100', 10);
+  const includeBots = req.query.bots === 'true';
   const hits = hitStatements.getRecent.all(limit);
-  res.json({ hits });
+  
+  // Filter out bots unless explicitly requested
+  const filtered = includeBots ? hits : (hits as any[]).filter((h: any) => {
+    try {
+      const extra = h.extra ? JSON.parse(h.extra) : {};
+      return !extra.is_bot;
+    } catch {
+      return true; // Include hits with malformed extra data
+    }
+  });
+  
+  res.json({ hits: filtered });
 });
 
 // Admin API - Export hits as CSV
@@ -835,6 +907,11 @@ app.post('/api/links', tokenAuth(['links']), (req, res) => {
     return res.status(400).json({ error: 'slug must contain only letters, numbers, dashes, and underscores' });
   }
   
+  // Reject malicious slug patterns (API endpoint)
+  if (isMaliciousPath(slug)) {
+    return res.status(400).json({ error: 'slug contains suspicious patterns and was rejected' });
+  }
+  
   try {
     new URL(destination);
   } catch {
@@ -927,8 +1004,16 @@ app.delete('/api/blacklist/:ip', tokenAuth(['blacklist']), (req, res) => {
 // 404 catch-all: redirect HTML clients, JSON for APIs
 const NOT_FOUND_REDIRECT = process.env.NOT_FOUND_REDIRECT || process.env.ROOT_REDIRECT || 'https://example.com';
 app.use((req, res) => {
+  const ip = getClientIP(req);
+  const path = req.path;
+  
+  // Auto-blacklist IPs probing for malicious paths (unless admin IP)
+  if (isMaliciousPath(path)) {
+    autoBlacklistIP(ip, `Malicious path probe: ${path}`);
+  }
+  
   // Track 404 hits
-  trackHit('redirect', `__404__:${req.path}`, req);
+  trackHit('redirect', `__404__:${path}`, req);
   
   // Log 404s to database
   try {
