@@ -345,14 +345,18 @@
             localStorage.removeItem('adminPassword');
             password = '';
             authSection.innerHTML = originalContent;
-            showStatus('authStatus', 'Saved password expired - please login again', 'error');
+            const passwordInput = document.getElementById('password');
+            if (passwordInput) passwordInput.value = ''; // Clear the field
+            showStatus('authStatus', 'Saved password invalid or expired. Please login again.', 'error');
           }
         })
         .catch(() => {
           localStorage.removeItem('adminPassword');
           password = '';
           authSection.innerHTML = originalContent;
-          showStatus('authStatus', 'Connection failed - please try again', 'error');
+          const passwordInput = document.getElementById('password');
+          if (passwordInput) passwordInput.value = ''; // Clear the field
+          showStatus('authStatus', 'Connection failed. Please try again.', 'error');
         });
       }
     });
