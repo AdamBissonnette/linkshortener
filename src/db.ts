@@ -57,14 +57,8 @@ db.exec(`
 // Create index on minute_key for faster lookups
 db.exec(`CREATE INDEX IF NOT EXISTS idx_hits_minute_key ON hits(minute_key)`);
 
-// For backwards compatibility: try to drop the generated column constraint if it exists
-try {
-  // This will fail silently if the column was already a regular column
-  db.exec(`ALTER TABLE hits DROP COLUMN minute_key`);
-  db.exec(`ALTER TABLE hits ADD COLUMN minute_key TEXT`);
-} catch (_) {
-  // Column already exists as regular column or can't be modified
-}
+// Note: If you have an existing database with minute_key as a GENERATED column,
+// you must run the migration script: node migrate-minute-key.js
 
 // Migration for existing DBs
 try { db.exec(`ALTER TABLE hits ADD COLUMN session_id TEXT`); } catch (_) {}

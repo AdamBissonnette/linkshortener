@@ -347,6 +347,9 @@
     });
 
     function authenticate() {
+      // Clear any saved password first to ensure fresh login
+      localStorage.removeItem('adminPassword');
+      
       password = document.getElementById('password').value;
       fetch('/admin/links', {
         headers: { 'Authorization': `Bearer ${password}` }
