@@ -190,10 +190,13 @@
       <!-- Links Tab -->
       <div id="linksTab" class="tab-content">
         <div class="card">
-          <h2>Add/Update Link</h2>
+          <h2 id="formTitle">Add/Update Link</h2>
           <input type="text" id="slug" placeholder="Slug (e.g., 'example')">
           <input type="text" id="destination" placeholder="Destination URL">
-          <button onclick="addLink()">Save Link</button>
+          <div style="display: flex; gap: 10px;">
+            <button onclick="addLink()" id="saveBtn">Save Link</button>
+            <button onclick="cancelEdit()" id="cancelBtn" class="secondary" style="display: none;">Cancel</button>
+          </div>
           <div id="linkStatus"></div>
         </div>
 
@@ -412,6 +415,32 @@
       setTimeout(() => el.innerHTML = '', 3000);
     }
 
+    let editingSlug = null;
+
+    function editLink(slug, destination) {
+      editingSlug = slug;
+      document.getElementById('slug').value = slug;
+      document.getElementById('slug').disabled = true; // Can't change slug when editing
+      document.getElementById('destination').value = destination;
+      document.getElementById('formTitle').textContent = 'Edit Link';
+      document.getElementById('saveBtn').textContent = 'Update Link';
+      document.getElementById('cancelBtn').style.display = 'inline-block';
+      
+      // Scroll to form
+      document.querySelector('.card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function cancelEdit() {
+      editingSlug = null;
+      document.getElementById('slug').value = '';
+      document.getElementById('slug').disabled = false;
+      document.getElementById('destination').value = '';
+      document.getElementById('formTitle').textContent = 'Add/Update Link';
+      document.getElementById('saveBtn').textContent = 'Save Link';
+      document.getElementById('cancelBtn').style.display = 'none';
+      document.getElementById('linkStatus').innerHTML = '';
+    }
+
     async function addLink() {
       const slug = document.getElementById('slug').value;
       const destination = document.getElementById('destination').value;
@@ -431,13 +460,29 @@
       });
 
       if (res.ok) {
-        showStatus('linkStatus', 'Link saved successfully', 'success');
-        document.getElementById('slug').value = '';
-        document.getElementById('destination').value = '';
+        showStatus('linkStatus', editingSlug ? 'Link updated successfully' : 'Link saved successfully', 'success');
+        cancelEdit(); // Reset form
         loadLinks();
       } else {
         showStatus('linkStatus', 'Failed to save link', 'error');
       }
+    }
+
+    function copyLink(slug) {
+      const url = `${window.location.origin}/l/${slug}`;
+      navigator.clipboard.writeText(url).then(() => {
+        // Show brief feedback
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.style.background = '#34c759';
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.background = '';
+        }, 1500);
+      }).catch(() => {
+        alert('Failed to copy link');
+      });
     }
 
     function testLink(slug) {
@@ -467,17 +512,22 @@
       const data = await res.json();
       
       const tbody = document.querySelector('#linksTable tbody');
-      tbody.innerHTML = data.links.map(link => `
+      tbody.innerHTML = data.links.map(link => {
+        // Escape single quotes in destination for onclick attribute
+        const escapedDest = link.destination.replace(/'/g, "\\'");
+        return `
         <tr>
           <td><strong>${link.slug}</strong></td>
           <td class="truncate" title="${link.destination}">${link.destination}</td>
           <td>${link.hits}</td>
           <td class="actions">
+            <button onclick="editLink('${link.slug}', '${escapedDest}')" class="secondary">Edit</button>
+            <button onclick="copyLink('${link.slug}')" class="secondary">Copy</button>
             <button onclick="testLink('${link.slug}')" class="success">Test</button>
             <button onclick="deleteLink('${link.slug}')" class="danger">Delete</button>
           </td>
         </tr>
-      `).join('');
+      `}).join('');
     }
 
     async function loadHits() {
