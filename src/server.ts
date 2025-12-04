@@ -68,7 +68,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Admin UI path (configurable, defaults to /derp)
 const ADMIN_PATH = process.env.ADMIN_PATH || '/derp';
-app.use(ADMIN_PATH, express.static(path.join(__dirname, '..', 'public')));
+
+// Middleware to protect admin UI with IP whitelist
+function protectAdminUI(req: Request, res: Response, next: NextFunction): void {
+  const ip = getClientIP(req);
+  
+  // Check IP whitelist - redirect non-whitelisted IPs to make admin path invisible
+  if (!ALLOWED_ADMIN_IPS.includes(ip) && !ALLOWED_ADMIN_IPS.includes('*')) {
+    res.redirect(302, ROOT_REDIRECT);
+    return;
+  }
+  
+  next();
+}
+
+app.use(ADMIN_PATH, protectAdminUI, express.static(path.join(__dirname, '..', 'public')));
 
 // Session cookie configuration
 const SESSION_WINDOW_MIN = Math.max(1, parseInt(process.env.SESSION_WINDOW_MIN || '30', 10));
@@ -318,29 +332,57 @@ function trackHit(type: 'redirect' | 'pixel', slug: string, req: Request, sessio
 }
 
 // Authentication middleware for admin routes
+// Supports both admin password (with IP whitelist) and API tokens
+// For API tokens, the required scopes should be checked by individual route handlers
 function authAdmin(req: Request, res: Response, next: NextFunction): void {
   const ip = getClientIP(req);
-  
-  // Check IP whitelist
-  if (!ALLOWED_ADMIN_IPS.includes(ip) && !ALLOWED_ADMIN_IPS.includes('*')) {
-    res.status(403).json({ error: 'IP not allowed' });
-    return;
-  }
-  
-  // Check password
   const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing or invalid authorization header' });
+  
+  // Try token authentication first (no IP restriction for tokens)
+  if (auth && auth.startsWith('Bearer ')) {
+    const token = auth.substring(7);
+    
+    // Check if it's an API token
+    const tokenRow = tokenStatements.getByToken.get(token) as APITokenRow | undefined;
+    if (tokenRow) {
+      // Valid API token - update last used timestamp and attach to request
+      tokenStatements.touch.run(Math.floor(Date.now()/1000), tokenRow.id);
+      (req as any).apiToken = tokenRow;
+      (req as any).isAdminPassword = false;
+      return next();
+    }
+    
+    // Not a valid token, check if it's the admin password
+    if (token === ADMIN_PASSWORD) {
+      // Admin password requires IP whitelist
+      if (!ALLOWED_ADMIN_IPS.includes(ip) && !ALLOWED_ADMIN_IPS.includes('*')) {
+        res.status(403).json({ error: 'IP not allowed' });
+        return;
+      }
+      (req as any).isAdminPassword = true;
+      return next();
+    }
+    
+    // Invalid credentials
+    res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
   
-  const password = auth.substring(7);
-  if (password !== ADMIN_PASSWORD) {
-    res.status(401).json({ error: 'Invalid password' });
-    return;
-  }
+  // No authorization header
+  res.status(401).json({ error: 'Missing authorization header' });
+}
+
+// Helper to check if request has required scope (for API token auth)
+function requireScope(req: Request, scope: string): boolean {
+  // Admin password has all scopes
+  if ((req as any).isAdminPassword) return true;
   
-  next();
+  // Check if API token has the required scope
+  const tokenRow = (req as any).apiToken as APITokenRow | undefined;
+  if (!tokenRow) return false;
+  
+  const scopes = new Set(tokenRow.scopes.split(',').map(s => s.trim()));
+  return scopes.has(scope);
 }
 
 // Serve tracking script from root
@@ -584,6 +626,10 @@ app.get('/p/:slug', (req, res) => {
 
 // Admin API - Add/Update link
 app.post('/admin/links', authAdmin, (req, res) => {
+  if (!requireScope(req, 'links')) {
+    return res.status(403).json({ error: 'Insufficient permissions: links scope required' });
+  }
+  
   const rawSlug = req.body.slug;
   const rawDestination = req.body.destination;
   
@@ -622,6 +668,10 @@ app.post('/admin/links', authAdmin, (req, res) => {
 
 // Admin API - Remove link
 app.delete('/admin/links/:slug', authAdmin, (req, res) => {
+  if (!requireScope(req, 'links')) {
+    return res.status(403).json({ error: 'Insufficient permissions: links scope required' });
+  }
+  
   const { slug } = req.params;
   
   try {
@@ -639,6 +689,10 @@ app.delete('/admin/links/:slug', authAdmin, (req, res) => {
 
 // Admin API - List links
 app.get('/admin/links', authAdmin, (req, res) => {
+  if (!requireScope(req, 'links')) {
+    return res.status(403).json({ error: 'Insufficient permissions: links scope required' });
+  }
+  
   const links = linkStatements.getAll.all() as Link[];
   const linksList = links.map(link => ({
     slug: link.slug,
@@ -653,6 +707,10 @@ app.get('/admin/links', authAdmin, (req, res) => {
 
 // Admin API - Get stats
 app.get('/admin/stats', authAdmin, (req, res) => {
+  if (!requireScope(req, 'hits') && !requireScope(req, 'stats')) {
+    return res.status(403).json({ error: 'Insufficient permissions: hits or stats scope required' });
+  }
+  
   const { slug, type } = req.query;
   
   // Fetch hits based on filters
@@ -694,12 +752,21 @@ res.json(stats);
 });
 
 // Admin API - API Token management
+// Token management is restricted to admin password only (not API tokens)
 app.get('/admin/tokens', authAdmin, (req, res) => {
+  if (!(req as any).isAdminPassword) {
+    return res.status(403).json({ error: 'Token management requires admin password authentication' });
+  }
+  
   const tokens = tokenStatements.list.all() as APITokenRow[];
   res.json({ tokens });
 });
 
 app.post('/admin/tokens', authAdmin, (req, res) => {
+  if (!(req as any).isAdminPassword) {
+    return res.status(403).json({ error: 'Token management requires admin password authentication' });
+  }
+  
   const { name, scopes } = req.body as { name?: string; scopes?: string[] };
   if (!name || !Array.isArray(scopes) || scopes.length === 0) {
     return res.status(400).json({ error: 'name and scopes[] are required' });
@@ -726,6 +793,10 @@ app.post('/admin/tokens', authAdmin, (req, res) => {
 });
 
 app.delete('/admin/tokens/:id', authAdmin, (req, res) => {
+  if (!(req as any).isAdminPassword) {
+    return res.status(403).json({ error: 'Token management requires admin password authentication' });
+  }
+  
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: 'invalid id' });
   const result = tokenStatements.delete.run(id);
@@ -735,6 +806,10 @@ app.delete('/admin/tokens/:id', authAdmin, (req, res) => {
 
 // Admin API - Get recent hits
 app.get('/admin/hits', authAdmin, (req, res) => {
+  if (!requireScope(req, 'hits')) {
+    return res.status(403).json({ error: 'Insufficient permissions: hits scope required' });
+  }
+  
   const limit = parseInt(req.query.limit as string || '100', 10);
   const includeBots = req.query.bots === 'true';
   const hits = hitStatements.getRecent.all(limit);
@@ -754,6 +829,10 @@ app.get('/admin/hits', authAdmin, (req, res) => {
 
 // Admin API - Export hits as CSV
 app.get('/admin/export/csv', authAdmin, (req, res) => {
+  if (!requireScope(req, 'export')) {
+    return res.status(403).json({ error: 'Insufficient permissions: export scope required' });
+  }
+  
   const { slug, type } = req.query;
   
   // Fetch hits based on filters
@@ -801,6 +880,10 @@ app.get('/admin/export/csv', authAdmin, (req, res) => {
 
 // Admin API - Download database
 app.get('/admin/download/db', authAdmin, (req, res) => {
+  if (!requireScope(req, 'export')) {
+    return res.status(403).json({ error: 'Insufficient permissions: export scope required' });
+  }
+  
   const dbPath = path.join(__dirname, '..', 'data', 'app.db');
   res.download(dbPath, 'app.db');
 });
@@ -822,11 +905,19 @@ app.get('/admin/logs', authAdmin, (req, res) => {
 
 // Admin API - IP Blacklist management
 app.get('/admin/blacklist', authAdmin, (req, res) => {
+  if (!requireScope(req, 'blacklist')) {
+    return res.status(403).json({ error: 'Insufficient permissions: blacklist scope required' });
+  }
+  
   const blacklist = blacklistStatements.getAll.all();
   res.json({ blacklist });
 });
 
 app.post('/admin/blacklist', authAdmin, (req, res) => {
+  if (!requireScope(req, 'blacklist')) {
+    return res.status(403).json({ error: 'Insufficient permissions: blacklist scope required' });
+  }
+  
   const rawIp = req.body.ip;
   const rawReason = req.body.reason;
   
@@ -854,6 +945,10 @@ app.post('/admin/blacklist', authAdmin, (req, res) => {
 });
 
 app.delete('/admin/blacklist/:ip', authAdmin, (req, res) => {
+  if (!requireScope(req, 'blacklist')) {
+    return res.status(403).json({ error: 'Insufficient permissions: blacklist scope required' });
+  }
+  
   const { ip } = req.params;
   
   try {
